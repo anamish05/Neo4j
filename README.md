@@ -175,3 +175,142 @@ LIMIT 5;
 Перетворити жанри у властивості до вузлів фільмів. Або створити проміжні сутності. Або обмежити глибину проходу графу.
 
 Part 5   
+5.1  PageRank  
+
+// 3.1. Запуск та запис PageRank у базу даних  
+CALL gds.pageRank.write(  
+  'movieGraph',  
+  {  
+    relationshipWeightProperty: 'weight',  
+    writeProperty: 'pageRank',  
+    dampingFactor: 0.85,  
+    maxIterations: 20  
+  }  
+)  
+YIELD nodePropertiesWritten, computeMillis;  
+
+// 3.2. Виведення Top-10 найвпливовіших фільмів  
+MATCH (m:Movie)  
+WHERE m.pageRank IS NOT NULL  
+RETURN m.title AS title, m.pageRank AS score  
+ORDER BY score DESC  
+LIMIT 10;  
+
+Що означає високий PageRank для фільму в цьому графі? Це просто “популярний фільм” чи щось інше?  
+
+Найбільший ранг отримали фільми Meet the parents, X-Men, Almost Famous, Gladiator, Blazing Saddles, Best in show, Americal Beauty..  
+Це не просто найкращі фільми, це фільми з найбільшою к-стю зв'язків з іншими фільмами які мають високий pagerank.  
+Відповідно такі фільми будуть найбільш імовірно рекомендуватися юзерам.  
+
+5.2 Louvain  
+
+CALL gds.graph.project(  
+  'userSimilarity',  
+  ['User'],  
+  ['SIMILAR'],  
+  {  
+    relationshipProperties: ['weight'],  
+    memory: '2GB'  
+  }  
+)  
+YIELD graphName, nodeCount, relationshipCount;  
+
+CALL gds.louvain.stream('userSimilarity', {  
+  relationshipWeightProperty: 'weight'  
+})  
+YIELD nodeId, communityId  
+WITH gds.util.asNode(nodeId) AS user, communityId  
+  
+// Шукаємо фільми з високими оцінками для кожного користувача спільноти  
+MATCH (user)-[r:RATED]->(m:Movie)-[:IN_GENRE]->(g:Genre)  
+WHERE r.rating >= 4  
+  
+// Агрегуємо жанри за спільнотами  
+WITH communityId, g.name AS genre, count(*) AS score  
+ORDER BY score DESC  
+WITH communityId, collect(genre)[..3] AS top3Genres  
+  
+RETURN communityId, top3Genres  
+LIMIT 10;  
+
+
+1. Чи відповідають отримані кластери інтуїтивним групам (наприклад, «любителі бойовиків», «цінителі арт-хаусу»)?
+   Отримані кластери мають типи "пригоди" (комедія, екшн, драма), "бойовики" (екшн, трилер, драма), фентезі (sci-fi, action, drama),
+   любителі романтики (romance, drama, comedy).  
+
+2. Як ви це перевірили?
+   modularity 0.67, тобто чітко виражені групи.  
+   CALL gds.louvain.stats('userSimilarity', {  
+  relationshipWeightProperty: 'weight'  
+})  
+YIELD modularity, communityCount;
+З іншої сторони, є фільми супер-популярні які входить до всіх кластерів та розмивають їх (типу Godfather, American BEauty, Shawshenk redemption входить майже в усі топ кластери).
+CALL gds.louvain.stream('userSimilarity', {  
+  relationshipWeightProperty: 'weight'  
+})  
+YIELD nodeId, communityId  
+WITH gds.util.asNode(nodeId) AS user, communityId  
+  
+// Рахуємо кількість користувачів у кожному кластері  
+WITH communityId, collect(user) AS users, count(user) AS clusterSize  
+WHERE clusterSize > 10 // Аналізуємо лише достатньо великі кластери  
+  
+UNWIND users AS user  
+MATCH (user)-[r:RATED]->(m:Movie)-[:IN_GENRE]->(g:Genre)  
+WHERE r.rating >= 4  
+  
+// Збираємо популярні фільми та жанри всередині кластера  
+WITH communityId, clusterSize,   
+     g.name AS genre, count(DISTINCT g) AS genreCount,  
+     m.title AS movieTitle, count(DISTINCT user) AS movieWatchers  
+  
+ORDER BY movieWatchers DESC  
+  
+RETURN communityId,  
+       clusterSize,  
+       collect(DISTINCT movieTitle)[..5] AS topMoviesInCluster,  
+       collect(DISTINCT genre)[..5] AS topGenres  
+ORDER BY clusterSize DESC  
+LIMIT 5;  
+
+5.3  Dijkstra  
+
+// 3.1. Запуск алгоритму Дейкстри для обраної пари користувачів  
+MATCH (source:User {userId: 1}), (target:User {userId: 100})  
+CALL gds.shortestPath.dijkstra.stream('userSimilarity', {  
+    sourceNode: source,  
+    targetNode: target,  
+    // Перетворюємо схожість на відстань: чем більше weight, тим менша 'вартість' кроку  
+    relationshipWeightProperty: 'weight'  
+})  
+YIELD index, sourceNode, targetNode, totalCost, nodeIds, costs   
+  
+// Розпаковуємо вузли на шляху для аналізу  
+UNWIND nodeIds AS nodeId  
+WITH totalCost, gds.util.asNode(nodeId) AS pathNode  
+  
+RETURN totalCost,   
+       collect(pathNode.userId) AS userPath,  
+       size(collect(pathNode.userId)) - 2 AS intermediateNodesCount;  
+
+// 3.2. Перевірка спільних фільмів між першою парою користувачів у ланцюжку  
+MATCH (u1:User {userId: 1})-[r1:RATED]->(m:Movie)<-[r2:RATED]-(u2:User {userId: 2})  
+WHERE r1.rating >= 4 AND r2.rating >= 4  
+RETURN m.title AS sharedMovie, r1.rating AS ratingUser1, r2.rating AS ratingUser2  
+LIMIT 5;  
+
+Висновки: total Cost 0.95. Проміжних ланок 4. Це фільми One Flew Over the Cuckoo's Nest, To Kill a Mockingbird" "Dead Poets Society" "Driving Miss Daisy" "Saving Private Ryan".  
+Якщо взяти іншу рандомну пару, то totalcost 2.1, а проміжних нод 9. Взявши третю рандомну пару - 5 проміжних нод.  
+
+1. Наскільки «тісний світ» у цьому датасеті? Спробуйте кілька пар користувачів.  
+Можемо бачити що світ у даному датасеті дуже тісний, тобто майже всі рандомні юзери дивилися схожі фільми.
+Тут уже питання до того де збиралася інформація, хто ці юзери, де живуть і тд.  
+3. Яка середня довжина шляху? Чи підтверджується гіпотеза «шести рукостискань»?
+   Взявши наші 3 рандомні пари, проміжні ноди в середньому якраз 6. Тобто підтверджується дана гіпотиеза.
+
+Part 6  
+
+
+
+
+
