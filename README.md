@@ -68,6 +68,7 @@ RETURN m.title AS Title,
        ROUND(avgRating, 2) AS AverageRating,   
        voteCount AS TotalVotes  
 ORDER BY AverageRating DESC;  
+<img width="1002" height="712" alt="1" src="https://github.com/user-attachments/assets/730ebb9f-2c29-462a-9859-e0386065ee90" />  
 
 --- find users rated 5 to more than 50 movies---  
 MATCH (u:User)-[r:RATED {rating: 5.0}]->(m:Movie)  
@@ -78,6 +79,8 @@ RETURN u.userId AS UserId,
        u.age AS Age,   
        topRatedCount AS HighRatingsCount  
 ORDER BY HighRatingsCount DESC;  
+<img width="1038" height="725" alt="2" src="https://github.com/user-attachments/assets/9192a504-8fc0-4f32-bceb-ef7c36e2bd59" />   
+
 
 --- find movies that were rated by 2 users more than 4 ---  
 MATCH (u1:User {userId: 1})-[r1:RATED]->(m:Movie)<-[r2:RATED]-(u2:User {userId: 2})  
@@ -87,6 +90,7 @@ RETURN m.movieId AS MovieId,
        m.year AS Year,  
        r1.rating AS RatingUser1,  
        r2.rating AS RatingUser2;  
+<img width="996" height="737" alt="3" src="https://github.com/user-attachments/assets/21b8db48-aaaf-4de1-a783-f9efcacd779c" />  
 
 --- find genres that constantly receive great reviews - median rate and ratings number ---  
 // 1. Знаходимо фільми та їхній середній рейтинг  
@@ -100,6 +104,7 @@ RETURN g.name AS Genre,
        SUM(movieVotes) AS TotalGenreVotes,  
        COUNT(m) AS TotalMovies  
 ORDER BY GenreAvgRating DESC;  
+<img width="1128" height="723" alt="4" src="https://github.com/user-attachments/assets/803919d7-505d-4b94-9ab2-4485ebeb4314" />  
 
 --- recommendation: users with similar taste viewed these movies ---   
 // 1. Беремо цільового користувача (Target User)  
@@ -122,6 +127,7 @@ RETURN rec.movieId AS MovieId,
        COUNT(DISTINCT similar) AS RecommendedByUsersCount  
 ORDER BY RecommendedByUsersCount DESC, AvgScoreFromSimilarUsers DESC  
 LIMIT 10;  
+<img width="1003" height="582" alt="5" src="https://github.com/user-attachments/assets/cf8b5635-60d1-43bd-aace-7e6c54a9abdc" />  
 
 --- find shortest path between 2 users according to the watched movies----  
 MATCH (u1:User {userId: 1}), (u2:User {userId: 100})  
@@ -309,6 +315,39 @@ LIMIT 5;
    Взявши наші 3 рандомні пари, проміжні ноди в середньому якраз 6. Тобто підтверджується дана гіпотиеза.
 
 Part 6  
+
+1. Граф vs SQL. Які із запитів частини 3 було б складно або неможливо написати в SQL? Чому? Наведіть конкретний приклад — покажіть, як виглядав би еквівалентний SQL-запит (або поясніть, чому його не існує).  
+Запит по рекомендації фільмів що дивилися користувачі з схожими смаками, можна реалізувати і в SQL (joins)
+SELECT   
+    m.title,   
+    COUNT(DISTINCT r2.user_id) AS recommended_by_count,  
+    AVG(r2.rating) AS avg_rating  
+FROM ratings r1  
+-- Крок 1: Знаходимо схожих користувачів за спільними фільмами  
+JOIN ratings r2 ON r1.movie_id = r2.movie_id AND r1.user_id <> r2.user_id  
+-- Крок 2: Знаходимо інші фільми, які дивилися ці схожі користувачі  
+JOIN ratings r3 ON r2.user_id = r3.user_id  
+JOIN movies m ON r3.movie_id = m.movie_id  
+WHERE r1.user_id = 1              -- Заданий користувач  
+  AND r1.rating >= 4              -- Враховуємо тільки хороші оцінки  
+  AND r2.rating >= 4  
+  AND r3.rating >= 4  
+  -- Відсіюємо фільми, які заданий користувач ВЖЕ подивився  
+  AND r3.movie_id NOT IN (  
+      SELECT movie_id FROM ratings WHERE user_id = 1  
+  )  
+GROUP BY m.movie_id, m.title  
+ORDER BY recommended_by_count DESC, avg_rating DESC  
+LIMIT 10;
+
+А от найкоротший ланцюг між юзерами це в SQL складно реалізувати, тут краще графи. Тому що невизначена глибина пошуку та к-сть join, на відміну від попереднього запиту.  
+2. Де граф програє? Для яких задач із цим датасетом реляційна модель підійшла б краще? Наприклад: агрегація по всіх користувачах, звіти, експорт даних.  
+Граф програє там де треба виконувати агрегації по всьоуму датасету (типу середній рейтинг жанру тощо). Також якщо треба вивантажувати плоскі дані для BI, то тут краще також SQL.  
+3. Покращення схеми. Які зміни в схемі прискорили б конкретні запити з частини 3? Розгляньте хоча б два запити.  
+У випадку з рекомендацією схожих фільмів, якщо у нас буде мільйони юзерів, то базі даних буде важко обходити усі звязки за даною схемою.  
+Можна зробити рефакторинг ребер за якістю оцінки (типу hogh rated, low rated..)  
+У випадку з найкоротшим ланцюгом між юзерами, за даною схемою 2дольного графу алгоритм проходить 2х шлях а також проходити через супер вузли.  
+Тому радять зробити монодольну проекцію між вузлами User. Це зменшить шлях у 2 рази.  
 
 
 
